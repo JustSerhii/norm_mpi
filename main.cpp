@@ -40,54 +40,16 @@ void printMatrix(const double* arr, int r, int c) {
     }
 }
 
-// Обчислює норму Фробеніуса розподілено між процесами (MPI)
-double computeFrobeniusNormMPI(double* data, int rows, int cols, int rank, int size) {
-    int baseRows = rows / size;
-    int extra = rows % size; //1000/6 ~ 166 перші 4 буде 167
-    int localRows = baseRows + ((rank < extra) ? 1 : 0);
-
-    // Буфер для локальної частини матриці
-    double* localBlock = new double[localRows * cols];
-
-    // Змінні для Scatterv (тільки на ранзі 0)
-    int* counts = nullptr;
-    int* displs = nullptr;
-    if (rank == 0) {
-        counts = new int[size];
-        displs = new int[size];
-        int offset = 0;
-        for (int i = 0; i < size; i++) {
-            int seg = baseRows + ((i < extra) ? 1 : 0);
-            counts[i] = seg * cols;
-            displs[i] = offset;
-            offset += counts[i];
-        }
-    }
-
-    // Розподіл даних по процесах
-    MPI_Scatterv(data, counts, displs, MPI_DOUBLE,
-                 localBlock, localRows * cols, MPI_DOUBLE,
-                 0, MPI_COMM_WORLD);
-
+// Обчислює локальну частину норми Фробеніуса 
+double computeFrobeniusNormMPI(double* localBlock, int localRows, int cols) {
     // Локальна сума квадратів
     double localSum = 0.0;
     for (int i = 0; i < localRows * cols; i++) {
         double val = localBlock[i];
         localSum += val * val;
     }
-
-    // Глобальна сума, підсумована на ранзі 0
-    double globalSum = 0.0;
-    MPI_Reduce(&localSum, &globalSum, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
-
-    delete[] localBlock;
-    if (rank == 0) {
-        delete[] counts;
-        delete[] displs;
-    }
-
-    // Тільки процес 0 повертає справжній результат
-    return (rank == 0) ? std::sqrt(globalSum) : 0.0;
+    
+    return localSum;
 }
 
 int main(int argc, char** argv) {
@@ -114,12 +76,59 @@ int main(int argc, char** argv) {
     MPI_Bcast(&rowCount, 1, MPI_INT, 0, MPI_COMM_WORLD);
     MPI_Bcast(&colCount, 1, MPI_INT, 0, MPI_COMM_WORLD);
 
-    // Вимірюємо час
-    auto start = std::chrono::high_resolution_clock::now();
-    double norm = computeFrobeniusNormMPI(matrix, rowCount, colCount, myRank, totalProcs);
-    auto end = std::chrono::high_resolution_clock::now();
+    // Розраховуємо кількість рядків для кожного процесу
+    int baseRows = rowCount / totalProcs;
+    int extra = rowCount % totalProcs;
+    int localRows = baseRows + ((myRank < extra) ? 1 : 0);
 
-    double elapsed = std::chrono::duration<double>(end - start).count();
+    // Буфер для локальної частини матриці
+    double* localBlock = new double[localRows * colCount];
+
+    // Змінні для Scatterv (тільки на ранзі 0)
+    int* counts = nullptr;
+    int* displs = nullptr;
+    if (myRank == 0) {
+        counts = new int[totalProcs];
+        displs = new int[totalProcs];
+        int offset = 0;
+        for (int i = 0; i < totalProcs; i++) {
+            int seg = baseRows + ((i < extra) ? 1 : 0);
+            counts[i] = seg * colCount;
+            displs[i] = offset;
+            offset += counts[i];
+        }
+    }
+
+    // Вимірюємо час
+    double start = MPI_Wtime();
+    
+    // Розподіл даних по процесах через Scatterv
+    MPI_Scatterv(matrix, counts, displs, MPI_DOUBLE,
+                 localBlock, localRows * colCount, MPI_DOUBLE,
+                 0, MPI_COMM_WORLD);
+    
+    // Кожен процес обчислює свою локальну суму квадратів
+    double localSum = computeFrobeniusNormMPI(localBlock, localRows, colCount);
+    
+    // Глобальна сума, підсумована на ранзі 0
+    double globalSum = 0.0;
+    MPI_Reduce(&localSum, &globalSum, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+    
+    // Обчислюємо кінцеву норму Фробеніуса (тільки ранг 0)
+    double norm = 0.0;
+    if (myRank == 0) {
+        norm = std::sqrt(globalSum);
+    }
+    
+    double end = MPI_Wtime();
+    double elapsed = end - start;
+
+    // Очищаємо ресурси
+    delete[] localBlock;
+    if (myRank == 0) {
+        delete[] counts;
+        delete[] displs;
+    }
 
     // Виводимо результат (тільки 0-й процес)
     if (myRank == 0) {
