@@ -1,0 +1,3 @@
+C:/Users/ks/Desktop/mpi/build/CMakeFiles/frobenius_mpi.dir
+C:/Users/ks/Desktop/mpi/build/CMakeFiles/ALL_BUILD.dir
+C:/Users/ks/Desktop/mpi/build/CMakeFiles/ZERO_CHECK.dir
